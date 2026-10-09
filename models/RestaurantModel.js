@@ -8,6 +8,19 @@ const restaurantSchema = new mongoose.Schema(
             required: [true, "Please Enter Name"],
             trim: true,
         },
+        ownerName: {
+            type: String,
+            trim: true,
+            default: "",
+        },
+        isActive: {
+            type: Boolean,
+            default: true,
+        },
+        acceptsOrders: {
+            type: Boolean,
+            default: true,
+        },
         mobile: {
             type: Number,
             unique: [true, "mobile already exist"],

@@ -18,6 +18,30 @@ const {
   sendCustomerFcmNotification,
 } = require("../utils/fcmNotificationHelper");
 
+const mapOrderStatusToKey = (rawStatus, orderStatusNum, orderMode) => {
+  const status = String(rawStatus || "placed").toLowerCase().trim();
+  const isPickupOrDining = ["pickup", "dining"].includes(String(orderMode || "").toLowerCase());
+  if (isPickupOrDining && status === "ready") return "ready";
+  if (isPickupOrDining && status === "served") return "served";
+
+  const statusCode = Number(orderStatusNum);
+  if (statusCode === 1) return "placed";
+  if (statusCode === 2) return "preparing";
+  if (statusCode === 3) return "assigned_to_rider";
+  if (statusCode === 4) return "out_for_delivery";
+  if (statusCode === 5) return "delivered";
+  if (statusCode === 6) return "cancelled";
+
+  if (status.includes("cancel") || status.includes("reject") || status.includes("decline")) return "cancelled";
+  if (status.includes("deliver") || status.includes("complete")) return "delivered";
+  if (status.includes("way") || status.includes("out") || status.includes("transit") || status.includes("picked") || status.includes("route")) {
+    return "out_for_delivery";
+  }
+  if (status.includes("assign") || status.includes("rider") || status.includes("ready")) return "assigned_to_rider";
+  if (status.includes("prepar") || status.includes("accept") || status.includes("cook")) return "preparing";
+  return "placed";
+};
+
 const getRazorpayClient = () => {
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
@@ -296,6 +320,10 @@ exports.createOrder = catchAsyncErrors(async (req, res, next) => {
     try {
       const io = req.app?.get("io");
       if (io) {
+        const restaurantId = order?.restauntId || order?.restaurantId;
+        if (restaurantId) {
+          io.to(`restaurant_${restaurantId}`).emit("restaurant:new_order", { order, restaurantId });
+        }
         io.to("admin_room").emit("admin:new_order", { order });
       }
     } catch (_) {}
@@ -436,18 +464,23 @@ exports.getOrderbyRestaurantId = catchAsyncErrors(async (req, res, next) => {
           $or: [
             { status: { $regex: /deliver/i } },
             { status: { $regex: /complet/i } },
-            { status: { $regex: /way/i } },
-            { status: { $regex: /out/i } },
-            { status: { $regex: /transit/i } },
-            { order_status: 4 },
             { order_status: 5 },
           ]
         });
       } else {
+        const statusCodes = {
+          placed: 1,
+          preparing: 2,
+          assigned_to_rider: 3,
+          out_for_delivery: 4,
+          delivered: 5,
+          cancelled: 6,
+        };
         filter.$and.push({
           $or: [
             { status: { $regex: new RegExp(`^${status}$`, "i") } },
-            { status: { $regex: new RegExp(status, "i") } }
+            { status: { $regex: new RegExp(status, "i") } },
+            ...(statusCodes[status] ? [{ order_status: statusCodes[status] }] : []),
           ]
         });
       }
@@ -480,20 +513,7 @@ exports.getOrderbyRestaurantId = catchAsyncErrors(async (req, res, next) => {
         o.totalPrice ||
         0;
 
-      let normStatus = "placed";
-      const s = String(o.status || "").toLowerCase();
-      if (s.includes("cancel")) normStatus = "cancelled";
-      else if (s.includes("deliver") || s.includes("complet")) normStatus = "delivered";
-      else if (s.includes("way") || s.includes("out") || s.includes("transit") || s.includes("route")) {
-        // At restaurant panel, when order is on the way, restaurant status is delivered
-        normStatus = "delivered";
-      }
-      else if (s.includes("pick")) normStatus = "delivered";
-      else if (s.includes("assign") || s.includes("rider")) normStatus = "assigned_to_rider";
-      else if (s.includes("ready")) normStatus = "ready";
-      else if (s.includes("serv")) normStatus = "served";
-      else if (s.includes("prepar") || s.includes("accept")) normStatus = "preparing";
-      else normStatus = "placed";
+      const normStatus = mapOrderStatusToKey(o.status, o.order_status, o.order_mode);
 
       const rawItems = (Array.isArray(o.items) && o.items.length)
         ? o.items
@@ -560,24 +580,8 @@ exports.getOrderbyRestaurantId = catchAsyncErrors(async (req, res, next) => {
       cancelled: 0,
     };
     allRestOrders.forEach((o) => {
-      const s = String(o.status || "").toLowerCase();
-      if (s.includes("cancel")) stats.cancelled++;
-      else if (
-        s.includes("deliver") ||
-        s.includes("complet") ||
-        s.includes("way") ||
-        s.includes("out") ||
-        s.includes("transit") ||
-        s.includes("route") ||
-        s.includes("pick")
-      ) {
-        stats.delivered++;
-      }
-      else if (s.includes("assign") || s.includes("rider")) stats.assigned_to_rider++;
-      else if (s.includes("ready")) stats.ready++;
-      else if (s.includes("serv")) stats.served++;
-      else if (s.includes("prepar") || s.includes("accept")) stats.preparing++;
-      else stats.placed++;
+      const status = mapOrderStatusToKey(o.status, o.order_status, o.order_mode);
+      if (Object.prototype.hasOwnProperty.call(stats, status)) stats[status]++;
     });
 
     return res.status(200).json({
@@ -604,10 +608,75 @@ exports.getOrderbyRestaurantId = catchAsyncErrors(async (req, res, next) => {
 
 exports.getRestaurantOrders = exports.getOrderbyRestaurantId;
 
+// Restaurant finance ledger. Uses the settlement recorded on restaurant orders;
+// it intentionally does not use the customer wallet collection.
+exports.getRestaurantTransactions = catchAsyncErrors(async (req, res) => {
+  const rawId = req.params.restaurantId;
+  const mongoose = require("mongoose");
+
+  if (!rawId) {
+    return res.status(400).json({ success: false, message: "Restaurant ID is required." });
+  }
+
+  const conditions = [
+    { restauntId: rawId },
+    { restaurantId: rawId },
+    { "restaurant._id": rawId },
+  ];
+  if (mongoose.Types.ObjectId.isValid(rawId)) {
+    const objectId = new mongoose.Types.ObjectId(rawId);
+    conditions.push({ restauntId: objectId }, { restaurantId: objectId });
+  }
+
+  const orders = await Order.find({
+    $and: [
+      { $or: conditions },
+      {
+        $or: [
+          { status: { $regex: /deliver|complet/i } },
+          { order_status: { $in: [4, 5] } },
+        ],
+      },
+    ],
+  })
+    .select("_id orderNumber Username customerName createdAt payment_mode payment_status restaurantSettlement")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const transactions = orders.map((order) => {
+    const settlement = order.restaurantSettlement || {};
+    const settlementStatus = String(settlement.settlementStatus || "PENDING").toUpperCase();
+    const status = settlementStatus === "PAID"
+      ? "completed"
+      : settlementStatus === "CANCELLED"
+        ? "refunded"
+        : "pending";
+
+    return {
+      key: `restaurant-settlement-${order._id}`,
+      transactionId: settlement.settlementRef || `RST-${String(order.orderNumber || order._id).slice(-8).toUpperCase()}`,
+      orderId: order.orderNumber || String(order._id),
+      customer: order.Username || order.customerName || "Customer",
+      date: settlement.settledAt || settlement.calculatedAt || order.createdAt,
+      amount: Number(settlement.netPayout || 0),
+      commission: Number(settlement.commissionAmount || 0),
+      commissionRate: Number(settlement.commissionRate || 0),
+      type: "settlement",
+      status,
+      settlementStatus,
+      orderStatus: "delivered",
+      paymentMethod: order.payment_mode || "",
+      paymentStatus: order.payment_status || "",
+    };
+  });
+
+  res.status(200).json({ success: true, data: transactions, transactions });
+});
+
 exports.updateOrderStatusByUrl = catchAsyncErrors(async (req, res, next) => {
   try {
     const { orderId } = req.params;
-    const { status, updatedBy } = req.body;
+    const { status, order_status, updatedBy } = req.body;
 
     let order = await Order.findById(orderId);
     if (!order) {
@@ -616,18 +685,122 @@ exports.updateOrderStatusByUrl = catchAsyncErrors(async (req, res, next) => {
 
     order.status = status;
     const s = String(status || "").toLowerCase();
-    if (s.includes("prepar")) order.order_status = 2;
+    const requestedStatusCode = Number(order_status);
+    if (Number.isInteger(requestedStatusCode) && requestedStatusCode >= 1 && requestedStatusCode <= 6) {
+      order.order_status = requestedStatusCode;
+    } else if (s.includes("prepar")) order.order_status = 2;
     else if (s.includes("ready")) order.order_status = 3;
     else if (s.includes("way")) order.order_status = 4;
-    else if (s.includes("deliver")) {
+    else if (s.includes("deliver") || s.includes("complete")) {
       order.order_status = 5;
       order.payment_status = "Paid";
       order.deliveryVerifiedAt = new Date();
     } else if (s.includes("cancel")) {
-      order.order_status = "Cancelled";
+      order.order_status = 6;
+      order.status = "Cancelled";
     }
 
     await order.save();
+
+    const orderIdValue = String(order._id);
+    const orderNumber = order.orderNumber || `#${orderIdValue.slice(-6).toUpperCase()}`;
+    const statusCode = Number(order.order_status);
+    const orderMode = String(order.order_mode || "delivery").toLowerCase();
+    const isPickupOrDining = ["pickup", "dining"].includes(orderMode);
+    const isReady = String(order.status || "").toLowerCase().includes("ready");
+    const io = req.app?.get("io");
+    const statusPayload = {
+      orderId: order._id,
+      order_status: order.order_status,
+      status: order.status,
+      otp: order.otp,
+      order,
+    };
+
+    if (io) {
+      io.to(`order_${order._id}`).emit("order_status_update", statusPayload);
+      if (order.DeliveryPersionId) {
+        io.to(`rider_${order.DeliveryPersionId}`).emit("order:updated", statusPayload);
+      }
+      io.to("all_riders").emit("order:updated", statusPayload);
+    }
+
+    if (order.userId) {
+      let title = `Order Update: ${order.status || "Updated"}`;
+      let body = `Your order ${orderNumber} status is now ${order.status || "updated"}.`;
+
+      if (statusCode === 2) {
+        title = "Order Being Prepared";
+        body = `${order.restauntName || "The restaurant"} is preparing your order ${orderNumber}.`;
+      } else if (statusCode === 3 && isPickupOrDining && isReady) {
+        title = "Order Ready";
+        body = `Your order ${orderNumber} is ready${orderMode === "pickup" ? " for pickup" : " to be served"}.`;
+      } else if (statusCode === 3) {
+        title = "Rider Assigned";
+        body = `A delivery partner has been assigned to order ${orderNumber}.`;
+      } else if (statusCode === 4) {
+        title = "Order On the Way";
+        body = `Your order ${orderNumber} is on the way.`;
+      } else if (statusCode === 5) {
+        title = "Order Delivered";
+        body = `Your order ${orderNumber} has been delivered.`;
+      } else if (statusCode === 6) {
+        title = "Order Cancelled";
+        body = `Your order ${orderNumber} has been cancelled.`;
+      }
+
+      sendCustomerFcmNotification(order.userId, {
+        title,
+        body,
+        data: {
+          orderId: orderIdValue,
+          order_status: String(order.order_status || ""),
+          status: String(order.status || ""),
+          type: statusCode === 6 ? "order_cancelled" : "order_status_update",
+          category: "orders",
+          statusKey: String(order.status || "").toLowerCase().replace(/\s+/g, "_"),
+          route: "TrackOrderScreen",
+        },
+      }).catch((notificationError) => {
+        console.log("[Restaurant status customer FCM note]:", notificationError?.message);
+      });
+    }
+
+    if (order.DeliveryPersionId) {
+      let title = `Order Update: ${order.status || "Updated"}`;
+      let body = `Order ${orderNumber} status updated to ${order.status || "updated"}.`;
+
+      if (statusCode === 2) {
+        title = "Order Being Prepared";
+        body = `${order.restauntName || "The restaurant"} is preparing order ${orderNumber}.`;
+      } else if (statusCode === 3 && isPickupOrDining && isReady) {
+        title = "Food Ready for Handoff";
+        body = `Order ${orderNumber} is ready at ${order.restauntName || "the restaurant"}.`;
+      } else if (statusCode === 4) {
+        title = "Order On the Way";
+        body = `Order ${orderNumber} is now on the way.`;
+      } else if (statusCode === 5) {
+        title = "Order Delivered";
+        body = `Order ${orderNumber} has been delivered.`;
+      } else if (statusCode === 6) {
+        title = "Order Cancelled";
+        body = `Order ${orderNumber} has been cancelled.`;
+      }
+
+      sendRiderFcmNotification(order.DeliveryPersionId, {
+        title,
+        body,
+        data: {
+          orderId: orderIdValue,
+          riderId: String(order.DeliveryPersionId),
+          type: statusCode === 6 ? "order_cancelled" : "order_status_update",
+          statusKey: String(order.status || "").toLowerCase().replace(/\s+/g, "_"),
+          route: "HomeScreen",
+        },
+      }).catch((notificationError) => {
+        console.log("[Restaurant status rider FCM note]:", notificationError?.message);
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -638,6 +811,32 @@ exports.updateOrderStatusByUrl = catchAsyncErrors(async (req, res, next) => {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
+
+exports.getRecentRestaurantOrders = catchAsyncErrors(async (req, res) => {
+  const mongoose = require("mongoose");
+  const restaurantId = req.params.restaurantId;
+  if (!restaurantId) {
+    return res.status(400).json({ success: false, message: "restaurantId is required" });
+  }
+
+  const restaurantConditions = [
+    { restauntId: restaurantId },
+    { restaurantId },
+    { "restaurant._id": restaurantId },
+  ];
+  if (mongoose.Types.ObjectId.isValid(restaurantId)) {
+    const objectId = new mongoose.Types.ObjectId(restaurantId);
+    restaurantConditions.push({ restauntId: objectId }, { restaurantId: objectId });
+  }
+
+  const orders = await Order.find({ $or: restaurantConditions })
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .lean();
+
+  return res.status(200).json({ success: true, orders });
+});
+
 exports.getlatestOrderbypartner = catchAsyncErrors(async (req, res, next) => {
   try {
     const order = await Order.findOne({
@@ -1086,7 +1285,11 @@ exports.Orderacceptbypartner = catchAsyncErrors(async (req, res, next) => {
         massage: "Order already accepted by someone",
       });
     } else {
-      const updateData = { ...req.body };
+      const updateData = {
+        ...req.body,
+        status: "Assigned to Rider",
+        order_status: 3,
+      };
       const restId = order.restauntId || order.restaurantId;
       if (restId) {
         try {
@@ -1137,8 +1340,8 @@ exports.Orderacceptbypartner = catchAsyncErrors(async (req, res, next) => {
         if (io) {
           io.to(`order_${order._id}`).emit("order_status_update", {
             orderId: order._id,
-            order_status: 3,
-            status: "Rider Assigned and Heading to Restaurant",
+            order_status: order.order_status,
+            status: order.status,
             rider: {
               id: order.DeliveryPersionId,
               name: order.delivery_persion_name,
@@ -1170,7 +1373,7 @@ exports.Orderacceptbypartner = catchAsyncErrors(async (req, res, next) => {
           data: {
             orderId: String(order._id),
             order_status: "3",
-            status: "Rider Assigned",
+            status: "Assigned to Rider",
             type: "order_status_update",
             category: "orders",
             statusKey: "rider_assigned",
@@ -1585,4 +1788,3 @@ exports.getRoadRouteProxy = catchAsyncErrors(async (req, res, next) => {
     coordinates: [],
   });
 });
-

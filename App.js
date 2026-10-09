@@ -59,6 +59,9 @@ app.use("/api/v1/addons", addons);
 const product = require("./routes/ProductRoute");
 app.use("/api/v1/product", product);
 
+const menu = require("./routes/MenuRoute");
+app.use("/api/v1/menu", menu);
+
 const order = require("./routes/OrderRoutes");
 app.use("/api/v1/order", order);
 

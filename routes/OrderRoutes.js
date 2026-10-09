@@ -17,7 +17,9 @@ const {
     verifyDelivery,
     createRazorpayPaymentLink,
     getRazorpayPaymentLinkStatus,
-    updateOrderStatusByUrl
+    updateOrderStatusByUrl,
+    getRestaurantTransactions,
+    getRecentRestaurantOrders,
 } = require("../controllers/OrderController");
 
 const router = express.Router();
@@ -31,6 +33,8 @@ router.route("/order-update-all").get(getOrder_update_all);
 router.route("/partner-orders/:partnerID").get(getOrderbypartner);
 router.route("/latest-partner-orders/:partnerID").get(getlatestOrderbypartner);
 router.route("/restaurant-orders/:restauntId").get(getOrderbyRestaurantId);
+router.route("/restaurant/:restaurantId/transactions").get(getRestaurantTransactions);
+router.route("/restaurant/:restaurantId/recent-orders").get(getRecentRestaurantOrders);
 router.route("/restaurant/:restaurantId").get(getOrderbyRestaurantId);
 router.route("/:orderId/status").put(updateOrderStatusByUrl);
 router.route("/user-orders/:userId").get(getOrderbyUserId);

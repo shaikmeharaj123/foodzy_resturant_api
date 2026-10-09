@@ -37,6 +37,46 @@ const productSchema = new mongoose.Schema({
     required: [true, "Please enter categoryUrl"],
   },
 
+  // Restaurant menu-management fields. The legacy display fields above remain
+  // in place for the customer-facing product APIs.
+  categoryId: {
+    type: mongoose.Schema.ObjectId,
+    ref: "Category",
+  },
+  subcategoryId: {
+    type: mongoose.Schema.ObjectId,
+    ref: "Subcategory",
+  },
+  price: {
+    type: Number,
+    min: 0,
+  },
+  discount_price: {
+    type: Number,
+    min: 0,
+  },
+  image: {
+    type: String,
+    default: "",
+  },
+  isAvailable: {
+    type: Boolean,
+    default: true,
+  },
+  estimateTimePrepareMenuItem: {
+    type: Number,
+    default: 60,
+    min: 1,
+  },
+  isVeg: {
+    type: Boolean,
+    default: true,
+  },
+  recommended: {
+    type: Boolean,
+    default: false,
+  },
+
   // subcategory: {
   //     type: String,
   //     required: [true, "Please enter Sub Category Name name"],

@@ -148,6 +148,25 @@ io.on("connection", (socket) => {
     socket.emit("admin:joined", { success: true });
   });
 
+  // 8. Restaurant Room Management for Live Incoming Orders
+  socket.on("restaurant:join", ({ restaurantId }) => {
+    if (restaurantId) {
+      const room = `restaurant_${restaurantId}`;
+      socket.join(room);
+      socket.join("all_restaurants");
+      console.log(`[Socket] Restaurant ${restaurantId} joined ${room} and all_restaurants`);
+      socket.emit("restaurant:joined", { restaurantId, room, success: true });
+    }
+  });
+
+  socket.on("restaurant:leave", ({ restaurantId }) => {
+    if (restaurantId) {
+      socket.leave(`restaurant_${restaurantId}`);
+      socket.leave("all_restaurants");
+      console.log(`[Socket] Restaurant ${restaurantId} left its room`);
+    }
+  });
+
   socket.on("disconnect", () => {
     console.log(`[Socket] Client disconnected: ${socket.id}`);
   });

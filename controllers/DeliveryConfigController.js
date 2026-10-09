@@ -537,6 +537,8 @@ exports.notifyRiderOrBroadcast = catchAsyncErrors(async (req, res, next) => {
     riderId,
     userId,
     customerId,
+    restaurantId,
+    restaurantIds,
     title,
     message,
     type = "admin_alert",
@@ -555,7 +557,11 @@ exports.notifyRiderOrBroadcast = catchAsyncErrors(async (req, res, next) => {
   const targetCustomer = userId || customerId;
   const audience =
     targetAudience ||
-    (targetCustomer
+    (restaurantId && restaurantId !== "ALL"
+      ? "restaurant_single"
+      : restaurantIds?.length
+      ? "restaurants_all"
+      : targetCustomer
       ? "customer_single"
       : riderId && riderId !== "ALL"
       ? "rider_single"
@@ -652,7 +658,46 @@ exports.notifyRiderOrBroadcast = catchAsyncErrors(async (req, res, next) => {
   }
 
   // ========================================================
-  // 3. TARGET: ALL RIDERS (Riders Only)
+  // 3. TARGET: ALL RESTAURANTS / SINGLE RESTAURANT
+  // ========================================================
+  if (audience === "restaurants_all" || audience === "restaurant_all") {
+    if (io) {
+      io.to("all_restaurants").emit("restaurant:custom_notification", notificationPayload);
+      io.emit("admin:broadcast", { ...notificationPayload, targetAudience: "restaurants_all" });
+      console.log(`[Notification Engine] Dispatched ONLY to ALL RESTAURANTS: "${title}"`);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Notification sent to all restaurants successfully",
+      target: "RESTAURANTS_ALL",
+      notification: notificationPayload,
+    });
+  }
+
+  if (audience === "restaurant_single" || (restaurantId && restaurantId !== "ALL")) {
+    if (io && restaurantId) {
+      io.to(`restaurant_${restaurantId}`).emit("restaurant:custom_notification", {
+        ...notificationPayload,
+        restaurantId,
+      });
+      io.to(`restaurant_${restaurantId}`).emit("restaurant:notification", {
+        ...notificationPayload,
+        restaurantId,
+      });
+      console.log(`[Notification Engine] Dispatched ONLY to Restaurant restaurant_${restaurantId}: "${title}"`);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Notification sent to restaurant successfully",
+      target: restaurantId,
+      notification: notificationPayload,
+    });
+  }
+
+  // ========================================================
+  // 4. TARGET: ALL RIDERS (Riders Only)
   // ========================================================
   if (audience === "riders_all") {
     if (io) {

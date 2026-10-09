@@ -1,4 +1,6 @@
 const Subcategory = require("../models/subCategoryModel");
+const Category = require("../models/categoryModel");
+const mongoose = require("mongoose");
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
 const ApiFeatures = require("../utils/apifeatures");
 const cloudinary = require("cloudinary");
@@ -313,7 +315,14 @@ exports.UploadSubCategoryImage = catchAsyncErrors(async (req, res, next) => {
 
 exports.subcategorybycatUrl = catchAsyncErrors(async (req, res, next) => {
   try {
-    let subcategories = await Subcategory.find({ categoryUrl: req.params.categoryUrl });
+    const categoryValue = req.params.categoryUrl;
+    let subcategories = await Subcategory.find({ categoryUrl: categoryValue });
+    if (!subcategories.length && mongoose.Types.ObjectId.isValid(categoryValue)) {
+      const category = await Category.findById(categoryValue).select("slugUrl");
+      if (category) {
+        subcategories = await Subcategory.find({ categoryUrl: category.slugUrl });
+      }
+    }
     if (!subcategories) {
       return res.status(200).json({
         success: false,
@@ -342,4 +351,3 @@ exports.subcategorybycatUrl = catchAsyncErrors(async (req, res, next) => {
     });
   }
 });
-

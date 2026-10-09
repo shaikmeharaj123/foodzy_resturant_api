@@ -8,26 +8,91 @@ const { withTimingMeta } = require("../utils/restaurantTiming");
 
 exports.createRestaurant = catchAsyncErrors(async (req, res, next) => {
     try {
-        const restaurant = await Restaurant.create(req.body);
-        res.status(201).json({
+        const {
+            name,
+            restaurantName,
+            ownerName,
+            email,
+            mobile,
+            phone,
+            contact_number,
+            FSSAI_Lic_No,
+            accountNumber,
+            ifscCode,
+            address,
+            Latitude,
+            Longitude,
+            location,
+            open_timings,
+            workingHours,
+            open_status,
+        } = req.body;
+
+        const restaurantNameValue = String(name || restaurantName || "").trim();
+        const emailValue = String(email || "").trim().toLowerCase();
+        const mobileValue = String(mobile || phone || "").replace(/\D/g, "").slice(-10);
+
+        if (!restaurantNameValue || !emailValue || mobileValue.length !== 10) {
+            return res.status(400).json({
+                success: false,
+                message: "Restaurant name, valid email, and 10-digit mobile are required.",
+            });
+        }
+
+        const formattedAddress = typeof address === "string"
+            ? address.trim()
+            : [address?.area, address?.city, address?.state, address?.pincode, address?.country]
+                .filter(Boolean)
+                .join(", ");
+        const timings = Array.isArray(open_timings)
+            ? open_timings
+            : (workingHours?.workingDays || []).map((day) => ({
+                day,
+                startTime: workingHours.openTime,
+                endTime: workingHours.closeTime,
+                staus: true,
+            }));
+
+        const restaurant = await Restaurant.create({
+            name: restaurantNameValue,
+            ownerName: String(ownerName || "").trim(),
+            email: emailValue,
+            mobile: Number(mobileValue),
+            contact_number: String(contact_number || mobileValue),
+            accountNumber: String(accountNumber || "").trim(),
+            ifscCode: String(ifscCode || "").trim().toUpperCase(),
+            address: formattedAddress,
+            Latitude: String(Latitude ?? location?.coordinates?.[1] ?? ""),
+            Longitude: String(Longitude ?? location?.coordinates?.[0] ?? ""),
+            open_timings: timings,
+            open_status: open_status !== undefined ? Boolean(open_status) : true,
+            status: false,
+            isActive: false,
+            acceptsOrders: true,
+            ...(String(FSSAI_Lic_No || "").trim()
+                ? { FSSAI_Lic_No: String(FSSAI_Lic_No).trim() }
+                : {}),
+        });
+
+        return res.status(201).json({
             success: true,
             restaurant,
         });
     } catch (error) {
-        res.status(501).json({
+        const duplicateField = error?.code === 11000 ? Object.keys(error.keyPattern || {})[0] : null;
+        const message = duplicateField === "mobile"
+            ? "This mobile number is already registered."
+            : duplicateField === "email"
+                ? "This email is already registered."
+                : duplicateField === "FSSAI_Lic_No"
+                    ? "This FSSAI license number is already registered."
+                : error?.name === "ValidationError"
+                    ? Object.values(error.errors).map((fieldError) => fieldError.message).join(", ")
+                    : error.message || "Unable to register restaurant.";
+
+        return res.status(error?.code === 11000 ? 409 : error?.name === "ValidationError" ? 400 : 500).json({
             success: false,
-            massage: error._message,
-            error: error,
-        });
-        res.status(400).json({
-            success: false,
-            massage: error._message,
-            error: error,
-        });
-        res.status(500).json({
-            success: false,
-            massage: error._message,
-            error: error,
+            message,
         });
     }
 });

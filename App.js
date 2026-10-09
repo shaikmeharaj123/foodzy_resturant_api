@@ -9,7 +9,7 @@ const errorMiddleware = require("./middleware/error");
 if (process.env.NODE_ENV !== "PRODUCTION") {
     require("dotenv").config({ path: "config/config.env" });
 }
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, parameterLimit: 500000, limit: '50mb' }))
 app.use(cookieParser());
@@ -29,6 +29,9 @@ app.use(session({
 }));
 
 //Route Imports
+const sendotp = require("./routes/OtpRoute");
+app.use("/api/v1/sendotp", sendotp);
+
 const doctor = require("./routes/DoctorRoutes");
 app.use("/api/v1/doctor", doctor);
 

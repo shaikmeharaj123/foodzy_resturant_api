@@ -393,19 +393,249 @@ exports.getSingleOrderbyId = catchAsyncErrors(async (req, res, next) => {
 });
 exports.getOrderbyRestaurantId = catchAsyncErrors(async (req, res, next) => {
   try {
-    const order = await Order.find({ restauntId: req.params.restauntId }).sort({
-      createdAt: -1,
+    const mongoose = require("mongoose");
+    const rawId = req.params.restaurantId || req.params.restauntId;
+    const { page = 1, limit = 1000, status, type, search } = req.query;
+
+    if (!rawId) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        orders: [],
+        order: [],
+        totalCount: 0,
+        page: 1,
+        totalPages: 0,
+      });
+    }
+
+    const isObjectId = mongoose.Types.ObjectId.isValid(rawId);
+    const queryConditions = [
+      { restauntId: rawId },
+      { restaurantId: rawId },
+      { "restaurant._id": rawId },
+    ];
+    if (isObjectId) {
+      queryConditions.push({ restauntId: new mongoose.Types.ObjectId(rawId) });
+      queryConditions.push({ restaurantId: new mongoose.Types.ObjectId(rawId) });
+    }
+
+    let filter = { $or: queryConditions };
+
+    if (status && status !== "all") {
+      filter.$and = filter.$and || [];
+      if (status === "placed" && type === "upcoming") {
+        filter.$and.push({
+          $or: [
+            { status: { $regex: /upcoming/i } },
+            { order_status: 1 }
+          ]
+        });
+      } else if (status === "delivered") {
+        filter.$and.push({
+          $or: [
+            { status: { $regex: /deliver/i } },
+            { status: { $regex: /complet/i } },
+            { status: { $regex: /way/i } },
+            { status: { $regex: /out/i } },
+            { status: { $regex: /transit/i } },
+            { order_status: 4 },
+            { order_status: 5 },
+          ]
+        });
+      } else {
+        filter.$and.push({
+          $or: [
+            { status: { $regex: new RegExp(`^${status}$`, "i") } },
+            { status: { $regex: new RegExp(status, "i") } }
+          ]
+        });
+      }
+    }
+
+    if (search) {
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: [
+          { orderNumber: { $regex: search, $options: "i" } },
+          { Username: { $regex: search, $options: "i" } },
+          { Usermobile: isNaN(Number(search)) ? undefined : Number(search) },
+        ].filter(Boolean)
+      });
+    }
+
+    const skip = (Number(page) - 1) * Number(limit);
+    const totalCount = await Order.countDocuments(filter);
+    const orders = await Order.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .lean();
+
+    const normalizedOrders = orders.map((o) => {
+      const amount =
+        o.grand_total ||
+        o.total_net_payable ||
+        o.total_Amount ||
+        o.totalPrice ||
+        0;
+
+      let normStatus = "placed";
+      const s = String(o.status || "").toLowerCase();
+      if (s.includes("cancel")) normStatus = "cancelled";
+      else if (s.includes("deliver") || s.includes("complet")) normStatus = "delivered";
+      else if (s.includes("way") || s.includes("out") || s.includes("transit") || s.includes("route")) {
+        // At restaurant panel, when order is on the way, restaurant status is delivered
+        normStatus = "delivered";
+      }
+      else if (s.includes("pick")) normStatus = "delivered";
+      else if (s.includes("assign") || s.includes("rider")) normStatus = "assigned_to_rider";
+      else if (s.includes("ready")) normStatus = "ready";
+      else if (s.includes("serv")) normStatus = "served";
+      else if (s.includes("prepar") || s.includes("accept")) normStatus = "preparing";
+      else normStatus = "placed";
+
+      const rawItems = (Array.isArray(o.items) && o.items.length)
+        ? o.items
+        : (Array.isArray(o.produucts) && o.produucts.length)
+        ? o.produucts
+        : (Array.isArray(o.products) && o.products.length)
+        ? o.products
+        : [];
+
+      const normalizedItems = rawItems.map((it) => ({
+        name: it.name || "Item",
+        quantity: it.cartQuentity || it.quantity || 1,
+        cartQuentity: it.cartQuentity || it.quantity || 1,
+        price: it.Price || it.price || 0,
+        Price: it.Price || it.price || 0,
+        total: it.TotalPrice || it.total || (it.Price || it.price || 0) * (it.cartQuentity || it.quantity || 1),
+        TotalPrice: it.TotalPrice || it.total || (it.Price || it.price || 0) * (it.cartQuentity || it.quantity || 1),
+        image: it.thumbnail || it.image || "",
+        thumbnail: it.thumbnail || it.image || "",
+        packSizeName: it.packSizeName || "Regular",
+      }));
+
+      return {
+        ...o,
+        id: o._id,
+        _id: o._id,
+        orderNumber: o.orderNumber || `ORD-${String(o._id || "").slice(-6).toUpperCase()}`,
+        totalAmount: amount,
+        grand_total: amount,
+        status: normStatus,
+        rawStatus: o.status,
+        paymentMode: o.payment_mode || "COD",
+        paymentMethod: String(o.payment_mode || "COD").toLowerCase(),
+        paymentStatus: String(o.payment_status || "Unpaid").toLowerCase(),
+        customerName: o.Username || o.customerName || "Customer",
+        customerMobile: o.Usermobile || o.customerMobile || "",
+        customerEmail: o.Useremail || o.customerEmail || "",
+        userName: o.Username || o.customerName || "Customer",
+        userPhone: o.Usermobile || o.customerMobile || "",
+        restaurantName: o.restauntName || o.restaurantName || "Restaurant Partner",
+        restaurantMobile: o.restauntmobile || o.restaurantMobile || "",
+        restaurantAddress: o.restauntAddress || o.restaurantAddress || "",
+        deliveryPersonName: o.DeliveryPersionName || "",
+        deliveryPersonMobile: o.DeliveryPersionmobile || "",
+        deliveryPartnerId: o.DeliveryPersionId || null,
+        order_mode: o.order_mode || "Delivery",
+        orderMode: o.order_mode || "Delivery",
+        items: normalizedItems,
+        produucts: normalizedItems,
+      };
     });
+
+    // Compute stats for all orders of this restaurant
+    const allRestOrders = await Order.find({ $or: queryConditions }).select("status order_status order_mode").lean();
+    const stats = {
+      total: allRestOrders.length,
+      placed: 0,
+      preparing: 0,
+      ready: 0,
+      served: 0,
+      assigned_to_rider: 0,
+      out_for_delivery: 0,
+      delivered: 0,
+      cancelled: 0,
+    };
+    allRestOrders.forEach((o) => {
+      const s = String(o.status || "").toLowerCase();
+      if (s.includes("cancel")) stats.cancelled++;
+      else if (
+        s.includes("deliver") ||
+        s.includes("complet") ||
+        s.includes("way") ||
+        s.includes("out") ||
+        s.includes("transit") ||
+        s.includes("route") ||
+        s.includes("pick")
+      ) {
+        stats.delivered++;
+      }
+      else if (s.includes("assign") || s.includes("rider")) stats.assigned_to_rider++;
+      else if (s.includes("ready")) stats.ready++;
+      else if (s.includes("serv")) stats.served++;
+      else if (s.includes("prepar") || s.includes("accept")) stats.preparing++;
+      else stats.placed++;
+    });
+
     return res.status(200).json({
       success: true,
-      order,
+      data: normalizedOrders,
+      orders: normalizedOrders,
+      order: normalizedOrders,
+      totalCount,
+      stats,
+      page: Number(page),
+      totalPages: Math.ceil(totalCount / Number(limit)) || 1,
     });
   } catch (error) {
+    console.error("getOrderbyRestaurantId error:", error);
     return res.status(500).json({
       success: false,
       message: error.message || error._message,
-      error: error,
+      data: [],
+      orders: [],
+      order: [],
     });
+  }
+});
+
+exports.getRestaurantOrders = exports.getOrderbyRestaurantId;
+
+exports.updateOrderStatusByUrl = catchAsyncErrors(async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    const { status, updatedBy } = req.body;
+
+    let order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    order.status = status;
+    const s = String(status || "").toLowerCase();
+    if (s.includes("prepar")) order.order_status = 2;
+    else if (s.includes("ready")) order.order_status = 3;
+    else if (s.includes("way")) order.order_status = 4;
+    else if (s.includes("deliver")) {
+      order.order_status = 5;
+      order.payment_status = "Paid";
+      order.deliveryVerifiedAt = new Date();
+    } else if (s.includes("cancel")) {
+      order.order_status = "Cancelled";
+    }
+
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      data: order,
+      order,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 exports.getlatestOrderbypartner = catchAsyncErrors(async (req, res, next) => {

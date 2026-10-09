@@ -762,3 +762,43 @@ exports.bookDiningTable = catchAsyncErrors(async (req, res, next) => {
         });
     }
 });
+
+exports.getRestaurantById = catchAsyncErrors(async (req, res, next) => {
+    try {
+        const mongoose = require("mongoose");
+        const rawId = req.params.id;
+        let restaurant = null;
+
+        if (mongoose.Types.ObjectId.isValid(rawId)) {
+            restaurant = await Restaurant.findById(rawId);
+        }
+        if (!restaurant) {
+            restaurant = await Restaurant.findOne({
+                $or: [
+                    { mobile: rawId },
+                    { mobile: isNaN(Number(rawId)) ? undefined : Number(rawId) },
+                    { name: rawId }
+                ].filter(Boolean)
+            });
+        }
+
+        if (!restaurant) {
+            return res.status(404).json({
+                success: false,
+                message: "Restaurant not found",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: restaurant,
+            restaurant: restaurant,
+        });
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: error.message,
+        });
+    }
+});
+

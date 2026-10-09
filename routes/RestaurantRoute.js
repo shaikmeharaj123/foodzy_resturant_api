@@ -2,6 +2,7 @@ const express = require("express");
 const {
     createRestaurant,
     getRestaurant,
+    getRestaurantById,
     UpdateRestaurant,
     DeleteRestaurant,
     verify_Restaurant_Number,
@@ -43,5 +44,7 @@ router.route("/delete").delete(DeleteRestaurant);
 router.route("/menu-add").put(Add_menu);
 router.route("/menu-update").put(update_menu);
 router.route("/update-restaurant-jwt").put(updating_restaurant_data_jws);
+router.route("/details/:id").get(getRestaurantById);
+router.route("/:id").get(getRestaurantById);
 
 module.exports = router;

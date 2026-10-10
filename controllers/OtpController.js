@@ -189,3 +189,68 @@ exports.sendOtpNewRestaurant = async (req, res) => {
     });
   }
 };
+
+exports.sendPhoneChangeOtp = async (req, res) => {
+  try {
+    const mobile = String(req.body.mobile || "").replace(/\D/g, "").slice(-10);
+    const restaurantId = String(req.body.restaurantId || "");
+
+    if (mobile.length !== 10 || !restaurantId) {
+      return res.status(400).json({ success: false, message: "A valid mobile number and restaurant ID are required." });
+    }
+
+    const existingRestaurant = await Restaurant.findOne({
+      $or: [
+        { mobile },
+        { mobile: Number(mobile) },
+        { phone: mobile },
+        { phone: Number(mobile) },
+      ],
+    });
+    if (existingRestaurant && String(existingRestaurant._id) !== restaurantId) {
+      return res.status(409).json({ success: false, message: "This mobile number is already registered." });
+    }
+
+    const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    otpCache.set(mobile, { otp: generatedOtp, expiresAt: Date.now() + 10 * 60 * 1000 });
+    sendSms(mobile, generatedOtp).catch(console.error);
+
+    return res.status(200).json({ success: true, message: `OTP sent successfully to ${mobile}.` });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message || "Failed to send OTP." });
+  }
+};
+
+exports.verifyPhoneChangeOtp = async (req, res) => {
+  try {
+    const mobile = String(req.body.mobile || "").replace(/\D/g, "").slice(-10);
+    const otp = String(req.body.otp || "").trim();
+    const restaurantId = String(req.body.restaurantId || "");
+
+    if (mobile.length !== 10 || otp.length !== 6 || !restaurantId) {
+      return res.status(400).json({ success: false, message: "A valid mobile number, 6-digit OTP, and restaurant ID are required." });
+    }
+
+    const cached = otpCache.get(mobile);
+    if (!cached || cached.otp !== otp || Date.now() > cached.expiresAt) {
+      return res.status(400).json({ success: false, message: "Invalid or expired OTP. Please try again." });
+    }
+
+    const existingRestaurant = await Restaurant.findOne({
+      $or: [
+        { mobile },
+        { mobile: Number(mobile) },
+        { phone: mobile },
+        { phone: Number(mobile) },
+      ],
+    });
+    if (existingRestaurant && String(existingRestaurant._id) !== restaurantId) {
+      return res.status(409).json({ success: false, message: "This mobile number is already registered." });
+    }
+
+    otpCache.delete(mobile);
+    return res.status(200).json({ success: true, message: "Mobile number verified successfully." });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message || "OTP verification failed." });
+  }
+};

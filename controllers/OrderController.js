@@ -23,6 +23,9 @@ const mapOrderStatusToKey = (rawStatus, orderStatusNum, orderMode) => {
   const isPickupOrDining = ["pickup", "dining"].includes(String(orderMode || "").toLowerCase());
   if (isPickupOrDining && status === "ready") return "ready";
   if (isPickupOrDining && status === "served") return "served";
+  if (status.includes("way") || status.includes("out") || status.includes("transit") || status.includes("picked") || status.includes("route")) {
+    return "out_for_delivery";
+  }
 
   const statusCode = Number(orderStatusNum);
   if (statusCode === 1) return "placed";

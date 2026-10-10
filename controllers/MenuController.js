@@ -192,6 +192,22 @@ exports.updateMenuItem = catchAsyncErrors(async (req, res) => {
   const existing = await Product.findById(req.params.id);
   if (!existing) return res.status(404).json({ success: false, message: "Menu item not found." });
 
+  const updateFields = Object.keys(req.body);
+  const availabilityOnly = updateFields.length > 0 &&
+    updateFields.every((field) => field === "isAvailable" || field === "status");
+  if (availabilityOnly) {
+    const availableValue = req.body.isAvailable ?? req.body.status;
+    const isAvailable = availableValue === true || availableValue === "true";
+    const item = await Product.findByIdAndUpdate(
+      req.params.id,
+      { $set: { isAvailable, status: isAvailable } },
+      { new: true, runValidators: true },
+    )
+      .populate("categoryId", "name slugUrl")
+      .populate("subcategoryId", "name slugUrl");
+    return res.status(200).json({ success: true, data: menuItemResponse(item) });
+  }
+
   let legacyCategoryId = existing.categoryId;
   if (!legacyCategoryId && existing.categoryUrl) {
     const legacyCategory = await Category.findOne({ slugUrl: existing.categoryUrl }).select("_id");
